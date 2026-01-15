@@ -3,11 +3,14 @@
 
 import os
 import sys
+from pathlib import Path
 
-# Set working directory to vibepaste folder
-VIBEPASTE_DIR = "/Users/sanel.zulic/myprojects/whisper.cpp/vibepaste"
-os.chdir(VIBEPASTE_DIR)
-sys.path.insert(0, VIBEPASTE_DIR)
+# Hardcoded project root - the app may be installed in /Applications
+# but the source code lives in this directory
+PROJECT_ROOT = Path("/Users/sanel.zulic/myprojects/whisper.cpp/vibepaste")
+
+os.chdir(PROJECT_ROOT)
+sys.path.insert(0, str(PROJECT_ROOT))
 
 # Check if already running
 import subprocess
@@ -15,7 +18,6 @@ result = subprocess.run(
     ["pgrep", "-f", "python.*menubar"],
     capture_output=True, text=True
 )
-# Get our own PID to exclude from check
 my_pid = str(os.getpid())
 running_pids = [p for p in result.stdout.strip().split('\n') if p and p != my_pid]
 
@@ -26,17 +28,18 @@ if running_pids:
     ])
     sys.exit(0)
 
-# Run the menubar app
-from src.menubar import main
-
 # Redirect stdout/stderr to log file for debugging
-log_file = os.path.join(VIBEPASTE_DIR, "vibepaste_debug.log")
+log_file = PROJECT_ROOT / "vibepaste_debug.log"
 sys.stdout = open(log_file, "a", buffering=1)
 sys.stderr = sys.stdout
 
+print(f"--- VibePaste Launcher Started ---")
+print(f"PROJECT_ROOT: {PROJECT_ROOT}")
 print(f"sys.executable: {sys.executable}")
-print(f"sys.path: {sys.path}")
 print(f"os.getcwd: {os.getcwd()}")
+
+# Run the menubar app
+from src.menubar import main
 
 try:
     main()
@@ -44,4 +47,3 @@ except Exception as e:
     print(f"CRITICAL ERROR: {e}")
     import traceback
     traceback.print_exc()
-
