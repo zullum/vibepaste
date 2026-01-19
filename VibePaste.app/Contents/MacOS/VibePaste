@@ -1,4 +1,4 @@
-#!/Users/sanel.zulic/myprojects/whisper.cpp/vibepaste/venv/bin/python3
+#!/Users/sanelzulic/myprojects/vibepaste/venv/bin/python3
 """VibePaste Launcher - Direct Python execution for Input Monitoring"""
 
 import os
@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Hardcoded project root - the app may be installed in /Applications
 # but the source code lives in this directory
-PROJECT_ROOT = Path("/Users/sanel.zulic/myprojects/whisper.cpp/vibepaste")
+PROJECT_ROOT = Path("/Users/sanelzulic/myprojects/vibepaste")
 
 os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))

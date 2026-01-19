@@ -37,84 +37,86 @@ try:
     import rumps
     RUMPS_AVAILABLE = True
 except ImportError:
+    rumps = None
     RUMPS_AVAILABLE = False
 
 
-class VibePasteMenuBar(rumps.App):
-    """Menu bar application for VibePaste"""
-    
-    def __init__(self):
-        super().__init__(
-            name="VibePaste",
-            title="🎙️",
-            quit_button="Quit VibePaste"
-        )
-        self.vibepaste = None
-        self.menu = [
-            rumps.MenuItem("Start VibePaste", callback=self.start_vibepaste),
-            rumps.MenuItem("Stop VibePaste", callback=self.stop_vibepaste),
-            None,  # Separator
-            rumps.MenuItem("Hotkeys:", callback=None),
-            rumps.MenuItem("  ⌥L + Space → English", callback=None),
-            rumps.MenuItem("  ⌥R + Space → Bosnian", callback=None),
-            rumps.MenuItem("  Space → Stop & Paste", callback=None),
-        ]
-        # Auto-start VibePaste
-        self.start_vibepaste(None)
-    
-    def start_vibepaste(self, sender):
-        """Start the VibePaste main process (in-process, not subprocess)"""
-        if self.vibepaste is not None:
-            rumps.notification(
-                title="🎙️ VibePaste",
-                subtitle="Already Running",
-                message="VibePaste is already active!"
+if RUMPS_AVAILABLE:
+    class VibePasteMenuBar(rumps.App):
+        """Menu bar application for VibePaste"""
+        
+        def __init__(self):
+            super().__init__(
+                name="VibePaste",
+                title="🎙️",
+                quit_button="Quit VibePaste"
             )
-            return
-            
-        try:
-            # Import and run VibePaste directly in this process
-            # This ensures the keyboard listener has the same permissions as the app
-            from src.main import VibePaste
-            
-            self.vibepaste = VibePaste()
-            self.vibepaste.run_background()
-            
-            self.title = "🎙️"
-            rumps.notification(
-                title="🎙️ VibePaste",
-                subtitle="Started",
-                message="Ready! Use ⌥+Space to record."
-            )
-            logger.info("VibePaste started successfully")
-        except Exception as e:
-            logger.error(f"Failed to start VibePaste: {e}")
-            rumps.notification(
-                title="🎙️ VibePaste",
-                subtitle="Error",
-                message=f"Failed to start: {e}"
-            )
-    
-    def stop_vibepaste(self, sender):
-        """Stop the VibePaste keyboard listener"""
-        if self.vibepaste:
-            try:
-                self.vibepaste.stop()
-            except Exception as e:
-                logger.error(f"Error stopping VibePaste: {e}")
             self.vibepaste = None
-            self.title = "🎙️ (off)"
-            rumps.notification(
-                title="🎙️ VibePaste",
-                subtitle="Stopped",
-                message="VibePaste has been stopped."
-            )
-        else:
-            rumps.notification(
-                title="🎙️ VibePaste",
-                subtitle="Not Running",
-                message="VibePaste is not currently running."
-            )
+            self.menu = [
+                rumps.MenuItem("Start VibePaste", callback=self.start_vibepaste),
+                rumps.MenuItem("Stop VibePaste", callback=self.stop_vibepaste),
+                None,  # Separator
+                rumps.MenuItem("Hotkeys:", callback=None),
+                rumps.MenuItem("  ⌥L + Space → English", callback=None),
+                rumps.MenuItem("  ⌥R + Space → Bosnian", callback=None),
+                rumps.MenuItem("  Space → Stop & Paste", callback=None),
+            ]
+            # Auto-start VibePaste
+            self.start_vibepaste(None)
+        
+        def start_vibepaste(self, sender):
+            """Start the VibePaste main process (in-process, not subprocess)"""
+            if self.vibepaste is not None:
+                rumps.notification(
+                    title="🎙️ VibePaste",
+                    subtitle="Already Running",
+                    message="VibePaste is already active!"
+                )
+                return
+                
+            try:
+                # Import and run VibePaste directly in this process
+                # This ensures the keyboard listener has the same permissions as the app
+                from src.main import VibePaste
+                
+                self.vibepaste = VibePaste()
+                self.vibepaste.run_background()
+                
+                self.title = "🎙️"
+                rumps.notification(
+                    title="🎙️ VibePaste",
+                    subtitle="Started",
+                    message="Ready! Use ⌥+Space to record."
+                )
+                logger.info("VibePaste started successfully")
+            except Exception as e:
+                logger.error(f"Failed to start VibePaste: {e}")
+                rumps.notification(
+                    title="🎙️ VibePaste",
+                    subtitle="Error",
+                    message=f"Failed to start: {e}"
+                )
+        
+        def stop_vibepaste(self, sender):
+            """Stop the VibePaste keyboard listener"""
+            if self.vibepaste:
+                try:
+                    self.vibepaste.stop()
+                except Exception as e:
+                    logger.error(f"Error stopping VibePaste: {e}")
+                self.vibepaste = None
+                self.title = "🎙️ (off)"
+                rumps.notification(
+                    title="🎙️ VibePaste",
+                    subtitle="Stopped",
+                    message="VibePaste has been stopped."
+                )
+            else:
+                rumps.notification(
+                    title="🎙️ VibePaste",
+                    subtitle="Not Running",
+                    message="VibePaste is not currently running."
+                )
 
 
 def main():
