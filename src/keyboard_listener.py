@@ -32,6 +32,12 @@ from src.hotkey_suppression import HotkeySuppressor
 
 # A key held longer than this almost certainly had its release event dropped.
 STUCK_KEY_SECONDS = 30.0
+
+# Ceiling on how long a bare key may be swallowed. Comfortably above the
+# recording hard limit (120s), so it never cuts a real recording short, but
+# short enough that a stop event going missing costs the user the space bar
+# for a couple of minutes rather than until they quit the app.
+BARE_SUPPRESS_SECONDS = 150.0
 _SHUTDOWN = object()
 
 MODIFIER_KEYS = frozenset({
@@ -90,11 +96,10 @@ class KeyboardListener:
 
         Starts disabled; only listened for while it means something.
 
-        This deliberately does *not* suppress the key. Swallowing the space
-        bar system-wide means any failure to switch it back off leaves the
-        user unable to type a space anywhere — which is exactly what
-        happened when a stop event went missing. A stray space before the
-        transcript is pasted is the far cheaper failure.
+        While enabled the key is also swallowed, so the Space that stops a
+        recording is not typed into the field the transcript is about to be
+        pasted into. That suppression carries its own deadline rather than
+        relying on being switched off — see suppress_bare_key.
         """
         self._bare[name] = {"key": key, "callback": callback, "enabled": False}
         logger.info(f"Registered bare key: {name} ({key})")
@@ -105,6 +110,9 @@ class KeyboardListener:
             logger.warning(f"No bare key registered as '{name}'")
             return
         config["enabled"] = enabled
+        self.suppressor.suppress_bare_key(
+            config["key"], BARE_SUPPRESS_SECONDS if enabled else None
+        )
         with self._lock:
             self._armed.pop(name, None)
         logger.info(f"Bare key '{name}' {'enabled' if enabled else 'disabled'}")
