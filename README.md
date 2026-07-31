@@ -71,34 +71,33 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure the App Launcher
+### 3. Build the App
 
-The `VibePaste.app` launcher needs your paths. Edit:
-
-```
-VibePaste.app/Contents/MacOS/VibePaste
-```
-
-Update **two things**:
-
-1. **Line 1 (Shebang)** - Point to your venv Python:
-
-   ```python
-   #!/path/to/your/vibepaste/venv/bin/python3
-   ```
-
-2. **Line 11 (PROJECT_ROOT)** - Point to your vibepaste folder:
-   ```python
-   PROJECT_ROOT = Path("/path/to/your/vibepaste")
-   ```
-
-### 4. (Optional) Install to Applications
-
-Copy the app to `/Applications` for Dock access:
+The bundle's executable is a small compiled launcher, not a script. This
+matters: when the executable is a `#!` script, macOS runs *Python* and
+treats Python as the application, so `VibePaste.app`'s own `Info.plist` is
+ignored and every permission is attributed to the interpreter. The symptoms
+are silent — no menu bar icon, and recordings that come out as silence.
 
 ```bash
-cp -R VibePaste.app /Applications/
+./tools/build_app.sh --install
 ```
+
+That compiles `tools/launcher.c`, ad-hoc signs the bundle so your granted
+permissions survive a rebuild, and copies it to `/Applications`. Drop
+`--install` to build in place.
+
+The Python side lives in `VibePaste.app/Contents/Resources/main.py`. If your
+checkout is not at `~/myprojects/vibepaste`, update `PROJECT_ROOT` there and
+the interpreter path in `tools/build_app.sh`, then rebuild.
+
+### 4. Grant Permissions
+
+On first launch VibePaste asks for **Microphone**, **Accessibility** and
+**Input Monitoring**. All three are required: without Microphone, macOS
+feeds the app silence rather than failing, and the transcript is invented.
+The permissions are attributed to VibePaste itself, so they persist when
+Homebrew upgrades Python.
 
 ### 5. Configuration (Crucial Step)
 
@@ -153,13 +152,19 @@ python3 -m src.menubar
     - **Right Option (⌥) + Space** → Bosnian/Other (uses large-v3 model)
 4.  Speak your message. Watch the bar under the dots — it fills over 60 s and
     turns red when your clip is getting long.
-5.  Press the **same combo again** to stop, transcribe, and paste.
+5.  Press plain **Space** — or the same combo again — to stop, transcribe
+    and paste.
 
 The hotkey combination is swallowed before it reaches the app you're typing
 in, so `⌥+Space` doesn't leave a stray non-breaking space in the field you're
 about to paste into. Plain `Space` is never touched — only Space *with Option
 held*. (This needs Accessibility permission; without it the hotkey still
 works but types a space, and the log says so.)
+
+Plain Space only means "stop" while a recording is actually running, and it
+is never swallowed: it still types a space as well. Suppressing it would
+mean that one missed stop event leaves you unable to type a space anywhere,
+which is a worse failure than a stray character.
 
 The hotkey is a toggle, so you can keep typing normally while a
 transcription runs. A new recording can be
@@ -175,10 +180,16 @@ is attempted, as `rec_<date>_<time>_<ms>_<lang>.wav`, with its transcript
 alongside as a `.txt`. The **last 10** are kept and older ones are deleted
 automatically.
 
-Open the menu bar icon and pick **Recent Recordings** to see them, newest
-first, with a preview of the text. Click one to copy its transcript to the
-clipboard. An entry marked *no transcript* means transcription failed — the
-audio is still there, and clicking reveals it in Finder.
+They open in their own window, reachable three ways: **Recent recordings…**
+at the bottom of the menu bar menu, clicking the Dock icon, or right-clicking
+the Dock icon.
+
+Each row draws the recording's real amplitude envelope, so you can pick one
+out without reading the transcript — and a recording captured with no
+microphone access shows as a flat line rather than looking like every other
+one. Those are labelled *No sound captured* and offer **Reveal** instead of
+**Copy**, because a transcript of silence is whatever the model invented for
+it, not something you said.
 
 ---
 
