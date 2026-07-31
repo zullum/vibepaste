@@ -1,291 +1,204 @@
 """VibePaste - Main orchestrator"""
 
-import signal
-import sys
-import os
-import time
-import shutil
 import logging
-import threading
+import sys
+import time
 from pathlib import Path
+
 from pynput import keyboard
 
-# Hide from macOS dock to prevent bouncing
-try:
-    import AppKit
-    info = AppKit.NSBundle.mainBundle().infoDictionary()
-    info["LSUIElement"] = "1"
-except ImportError:
-    pass  # AppKit not available (not on macOS)
-
-# Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import (
-    WHISPER_PATH,
-    MODEL_PATH_TURBO,
-    MODEL_PATH_V3,
-    MODEL_FOR_ENGLISH,
-    MODEL_FOR_BOSNIAN,
-    TEMP_AUDIO_PATH,
-    SAMPLE_RATE,
-    CHANNELS,
-    LANGUAGE_BOSNIAN,
-    LANGUAGE_ENGLISH,
-)
-from src.audio_recorder import AudioRecorder
-from src.transcriber import Transcriber
-from src.paster import Paster
-from src.keyboard_listener import KeyboardListener
-from src.overlay import RecordingOverlay, SoundEffects
+import config  # noqa: E402
+from src.audio_recorder import AudioRecorder  # noqa: E402
+from src.keyboard_listener import KeyboardListener  # noqa: E402
+from src.overlay import OverlayController, SoundEffects  # noqa: E402
+from src.paster import Paster  # noqa: E402
+from src.recording_session import RecordingSession  # noqa: E402
+from src.recording_store import RecordingStore  # noqa: E402
+from src.transcriber import Transcriber  # noqa: E402
+from src.transcription_worker import TranscriptionJob, TranscriptionWorker  # noqa: E402
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
+
+LANGUAGES = {
+    "english": (config.LANGUAGE_ENGLISH, config.MODEL_FOR_ENGLISH, "turbo"),
+    "bosnian": (config.LANGUAGE_BOSNIAN, config.MODEL_FOR_BOSNIAN, "v3"),
+}
 
 
 class VibePaste:
-    """Main application orchestrator"""
+    """Wires hotkeys, recording, transcription and pasting together.
+
+    Recording always takes priority: it can start even while an earlier clip
+    is still transcribing, and audio is written to the store before any
+    transcription is attempted, so a failure never loses what was said.
+    """
 
     def __init__(self):
         logger.info("Initializing VibePaste")
 
-        # Initialize components
         self.audio_recorder = AudioRecorder(
-            sample_rate=SAMPLE_RATE,
-            channels=CHANNELS
+            sample_rate=config.SAMPLE_RATE, channels=config.CHANNELS
         )
-        # We'll create transcriber per request with appropriate model
-        self.whisper_path = WHISPER_PATH
-        self.paster = Paster(restore_clipboard=False)
+        self.store = RecordingStore(
+            config.RECORDINGS_DIR, config.MAX_STORED_RECORDINGS
+        )
+        self.transcriber = Transcriber(
+            whisper_cli_path=config.WHISPER_PATH,
+            server_path=config.WHISPER_SERVER_PATH,
+            threads=config.WHISPER_THREADS,
+            attempts=config.TRANSCRIBE_ATTEMPTS,
+            timeout_base=config.TRANSCRIBE_TIMEOUT_BASE,
+            timeout_per_second=config.TRANSCRIBE_TIMEOUT_PER_SECOND,
+            startup_timeout=config.SERVER_STARTUP_TIMEOUT,
+            idle_unload_seconds=config.SERVER_IDLE_UNLOAD_SECONDS,
+        )
+        self.paster = Paster()
+        self.sounds = SoundEffects()
         self.keyboard_listener = KeyboardListener()
-        self.overlay = RecordingOverlay()
-        self.sound_effects = SoundEffects()
+        self.overlay = OverlayController(on_auto_stop=self._on_auto_stop)
+        self.worker = TranscriptionWorker(
+            transcriber=self.transcriber, store=self.store,
+            paster=self.paster, sounds=self.sounds,
+            on_queue_change=self._refresh_overlay,
+        )
+        self.session = RecordingSession(
+            audio_recorder=self.audio_recorder, store=self.store,
+            overlay=self.overlay, sounds=self.sounds,
+            sample_rate=config.SAMPLE_RATE,
+            warn_seconds=config.RECORDING_WARN_SECONDS,
+            max_seconds=config.RECORDING_MAX_SECONDS,
+            on_saved=self._on_recording_saved,
+        )
 
-        # Track recording state
-        self.is_recording = False
-        self.recording_language = None
-        self.recording_model = None
-
-        # Register hotkeys
         self._register_hotkeys()
-
-        logger.info("VibePaste initialized successfully")
+        logger.info("VibePaste initialized")
 
     def _register_hotkeys(self):
-        """Register keyboard hotkeys"""
-        # Left Option + Space (Start English)
-        self.keyboard_listener.register_hotkey(
-            name='english',
-            modifier=keyboard.Key.alt_l,
-            key=keyboard.Key.space,
-            on_toggle=self._on_start_english
-        )
-
-        # Right Option + Space (Start Bosnian)
-        self.keyboard_listener.register_hotkey(
-            name='bosnian',
-            modifier=keyboard.Key.alt_r,
-            key=keyboard.Key.space,
-            on_toggle=self._on_start_bosnian
-        )
-
-        # Space alone (Stop recording)
-        self.keyboard_listener.register_single_key(
-            name='stop',
-            key=keyboard.Key.space,
-            on_press=self._on_stop_recording
-        )
-
-    def _on_start_english(self, hotkey_name):
-        """Start English recording"""
-        if not self.is_recording:
-            self._start_recording('english')
-
-    def _on_start_bosnian(self, hotkey_name):
-        """Start Bosnian recording"""
-        if not self.is_recording:
-            self._start_recording('bosnian')
-
-    def _on_stop_recording(self):
-        """Stop recording when Space is pressed alone"""
-        try:
-            print(f"DEBUG: _on_stop_recording called. is_recording={self.is_recording}")
-            if self.is_recording:
-                # DEBOUNCE: Check if recording just started (e.g. key repeat)
-                if hasattr(self, 'recording_start_time') and (time.time() - self.recording_start_time < 1.0):
-                    print("DEBUG: Stop ignored (too soon - debounce protection)")
-                    return
-
-                # Run in separate thread to avoid blocking listener
-                threading.Thread(target=self._stop_and_transcribe).start()
-            else:
-                print("DEBUG: Stop ignored (not recording)")
-        except Exception as e:
-            print(f"ERROR in _on_stop_recording: {e}")
-            import traceback
-            traceback.print_exc(file=sys.stdout)
-
-    def _start_recording(self, hotkey_name):
-        """Start recording audio"""
-        logger.info(f"Hotkey pressed: {hotkey_name} - Starting recording")
-        
-        self.recording_start_time = time.time()
-
-        # Set language and model based on hotkey
-        if hotkey_name == 'english':
-            self.recording_language = LANGUAGE_ENGLISH
-            self.recording_model = MODEL_FOR_ENGLISH
-            model_name = "turbo"
-        elif hotkey_name == 'bosnian':
-            self.recording_language = LANGUAGE_BOSNIAN
-            self.recording_model = MODEL_FOR_BOSNIAN
-            model_name = "v3"
-
-        # Start recording
-        try:
-            # Reset keyboard state to prevent stuck modifiers
-            self.keyboard_listener.reset_keys()
-            
-            self.audio_recorder.start_recording()
-            self.is_recording = True
-            lang_display = self.recording_language or 'English'
-
-            # Play start sound and show overlay
-            self.sound_effects.play_start()
-            self.overlay.show(language=lang_display, model=model_name)
-
-            logger.info(f"Recording started (language: {lang_display}, model: {model_name})")
-            print(f"\n🔴 Recording... ({lang_display}, {model_name})")
-            print("Press Space to stop and transcribe")
-        except Exception as e:
-            logger.error(f"Failed to start recording: {e}")
-            print(f"\n⚠️  ERROR: Could not start recording: {e}")
-            print("Make sure microphone permissions are granted in System Settings")
-            self.is_recording = False
-
-    def _stop_and_transcribe(self):
-        """Stop recording and transcribe audio"""
-        # Play stop sound and hide overlay
-        self.sound_effects.play_stop()
-        self.overlay.hide()
-        
-        print("DEBUG: _stop_and_transcribe called")
-
-        # Stop recording
-        try:
-            print("DEBUG: Calling audio_recorder.stop_recording...")
-            success = self.audio_recorder.stop_recording(TEMP_AUDIO_PATH)
-            self.is_recording = False
-            print(f"DEBUG: stop_recording returned {success}")
-
-            if not success:
-                print("⚠️  No audio recorded")
-                return
-
-            print("🎙️  Processing...")
-
-            # Create transcriber with appropriate model
-            print(f"DEBUG: Initializing transcriber with model {self.recording_model}")
-            transcriber = Transcriber(
-                whisper_path=self.whisper_path,
-                model_path=self.recording_model
+        for name, modifier in (("english", keyboard.Key.alt_l),
+                               ("bosnian", keyboard.Key.alt_r)):
+            self.keyboard_listener.register_toggle(
+                name=name, modifier=modifier,
+                key=keyboard.Key.space, callback=self._on_hotkey,
             )
+        # Plain Space also stops, which is how this has always been used.
+        # It is only listened for (and swallowed) while actually recording.
+        self.keyboard_listener.register_bare_key(
+            name="stop", key=keyboard.Key.space, callback=self._on_stop_key,
+        )
 
-            # Transcribe
-            print("DEBUG: Starting transcription...")
-            transcription = transcriber.transcribe(
-                audio_path=TEMP_AUDIO_PATH,
-                language=self.recording_language
-            )
-            print(f"DEBUG: Transcription result: {transcription}")
+    def _set_recording_state(self, recording):
+        """Space means 'stop' only while a recording is running."""
+        self.keyboard_listener.enable_bare_key("stop", recording)
+        self._refresh_overlay()
 
-            if not transcription:
-                print("⚠️  No transcription generated")
-                return
+    # -- callbacks -------------------------------------------------------
 
-            # Paste
-            print(f"✅ Transcribed: {transcription}")
+    def _on_hotkey(self, name):
+        """Toggle: the same combo that starts a recording also stops it."""
+        if self.session.is_recording:
+            self.session.stop()
+        else:
+            self.session.start(*LANGUAGES[name])
+        self._set_recording_state(self.session.is_recording)
 
-            print("DEBUG: Pasting text...")
-            success = self.paster.paste_text(transcription)
-            if success:
-                print("📋 Pasted!")
-            else:
-                print("⚠️  Paste failed - text copied to clipboard instead")
+    def _on_stop_key(self, _name):
+        """Plain Space pressed — stop if we are recording, else ignore."""
+        if self.session.is_recording:
+            self.session.stop()
+        self._set_recording_state(self.session.is_recording)
 
-        except Exception as e:
-            print(f"\n⚠️  ERROR in stop/transcribe: {e}")
-            import traceback
-            traceback.print_exc(file=sys.stdout)
-            self.is_recording = False
+    def _on_auto_stop(self):
+        """The overlay reported the recording hit its hard time limit."""
+        self.session.stop()
+        self._set_recording_state(self.session.is_recording)
+
+    def _on_recording_saved(self, wav_path, model_path, language, duration):
+        self.worker.submit(
+            TranscriptionJob(wav_path, model_path, language, duration)
+        )
+
+    def _refresh_overlay(self):
+        """Overlay follows state: recording > transcribing > hidden."""
+        if self.session.is_recording:
+            return  # show_recording already runs the bar; don't restart it
+        if self.worker.pending > 0:
+            self.overlay.show_processing()
+        else:
+            self.overlay.hide()
+
+    # -- lifecycle -------------------------------------------------------
 
     def run_background(self):
-        """Run in background mode - for menubar integration (non-blocking)"""
-        logger.info("Starting VibePaste in background mode")
-        
-        # Check device
+        """Start hotkeys without blocking — used by the menubar app."""
         device = self.audio_recorder.get_default_device()
         if device:
             logger.info(f"Using microphone: {device['name']}")
-        
-        # Start keyboard listener (non-blocking)
+        self.overlay.start()
         self.keyboard_listener.start()
-        logger.info("VibePaste background mode started - keyboard listener active")
+        logger.info("VibePaste background mode started")
 
     def run(self):
-        """Run the application"""
-        logger.info("Starting VibePaste")
-        print("\n" + "="*60)
-        print("🎙️  VibePaste - Voice to Text Auto-Paste (Toggle Mode)")
-        print("="*60)
-        print("\nHotkeys:")
-        print("  Left Option + Space   →  Start English recording (turbo)")
-        print("  Right Option + Space  →  Start Bosnian recording (v3)")
-        print("  Space (alone)         →  Stop recording and transcribe")
-        print("\nUsage:")
-        print("  1. Press hotkey once to START recording")
-        print("  2. Speak your message")
-        print("  3. Press hotkey again to STOP, transcribe, and paste")
-        print("\nPress Ctrl+C to exit")
-        print("="*60 + "\n")
-
-        # Check device
+        """Run in the foreground until interrupted."""
+        _print_banner()
         device = self.audio_recorder.get_default_device()
         if device:
-            print(f"🎤 Using microphone: {device['name']}\n")
+            print(f"🎤 Microphone: {device['name']}\n")
 
-        # Start keyboard listener
+        self.overlay.start()
         self.keyboard_listener.start()
-
-        # Keep running until interrupted
         try:
-            import time
             while self.keyboard_listener.is_running():
-                time.sleep(1)  # Sleep instead of signal.pause() to avoid macOS dock bouncing
+                time.sleep(0.5)
         except KeyboardInterrupt:
-            logger.info("Received interrupt signal")
             print("\n\n👋 Shutting down VibePaste...")
+        finally:
             self.stop()
 
     def stop(self):
-        """Stop the application"""
+        """Shut everything down, leaving no orphan processes."""
         logger.info("Stopping VibePaste")
-        self.overlay.hide()
+        self.session.shutdown()
         self.keyboard_listener.stop()
+        self.overlay.stop()
+        self.worker.shutdown()
+        self.transcriber.shutdown()
         logger.info("VibePaste stopped")
 
 
+def _print_banner():
+    print("\n" + "=" * 62)
+    print("🎙️  VibePaste - Voice to Text Auto-Paste")
+    print("=" * 62)
+    print("  Left Option + Space   →  English (turbo), press again to stop")
+    print("  Right Option + Space  →  Bosnian (v3), press again to stop")
+    print(f"\n  Last {config.MAX_STORED_RECORDINGS} recordings kept in "
+          f"{config.RECORDINGS_DIR}")
+    print(f"  Bar turns red at {config.RECORDING_WARN_SECONDS}s, "
+          f"auto-stops at {config.RECORDING_MAX_SECONDS}s")
+    print("\n  Ctrl+C to exit")
+    print("=" * 62 + "\n")
+
+
+def setup_logging():
+    config.VIBEPASTE_DIR.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=getattr(logging, config.LOG_LEVEL, logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.FileHandler(config.LOG_PATH),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+
+
 def main():
-    """Entry point"""
+    setup_logging()
     try:
-        app = VibePaste()
-        app.run()
+        VibePaste().run()
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        logger.error(f"Fatal error: {e}", exc_info=True)
         print(f"\n❌ FATAL ERROR: {e}")
         sys.exit(1)
 

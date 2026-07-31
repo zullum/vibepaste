@@ -8,3 +8,12 @@ build/
 *.egg-info/
 vibepaste_debug.log
 *.wav
+
+# Generated icon intermediates
+assets/AppIcon.iconset/
+.pytest_cache/
+
+# Compiled bundle launcher and its signature — rebuild with
+# ./tools/build_app.sh --install
+VibePaste.app/Contents/MacOS/VibePaste
+VibePaste.app/Contents/_CodeSignature/

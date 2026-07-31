@@ -7,10 +7,25 @@
 ## 🚀 Features
 
 - **Offline & Private**: All transcription happens locally on your machine.
-- **Fast & Accurate**: Powered by the state-of-the-art `whisper.cpp` engine.
-- **Seamless Integration**: Pastes text directly into your active cursor position.
-- **Global Hotkeys**: Start/Stop recording from anywhere.
-- **Visual Feedback**: Elegant on-screen recording overlay.
+- **Fast**: Keeps a `whisper-server` resident so the model isn't reloaded on
+  every recording. A warm transcription of a short clip takes ~0.6 s instead
+  of ~4 s.
+- **Audio is never lost**: Every recording is written to disk *before*
+  transcription is attempted. The last 10 are kept; older ones are pruned.
+- **Recent Recordings menu**: The menu bar lists the last 10 recordings with
+  a preview of their text — click one to copy its transcript to the clipboard.
+- **Global Hotkeys**: The same combo starts and stops a recording.
+- **Visual Feedback**:
+  - 🔴 **Recording** — pulsating red dots, plus a duration bar that fills
+    left-to-right and shifts blue → green → red as you approach one minute,
+    so you know when to break your dictation into parts.
+  - 🔵 **Processing** — spinning teal arc while audio is transcribed.
+- **Escalating retries**: Transcription is retried three times, each with a
+  *different* mechanism (resident server → restarted server → `whisper-cli`
+  fork), so a wedged server can't silently produce nothing.
+- **Honest paste**: Checks macOS Accessibility permission before simulating
+  `Cmd+V`, falls back to AppleScript, and otherwise tells you the text is in
+  the clipboard rather than reporting a success that didn't happen.
 
 ---
 
@@ -25,10 +40,11 @@ VibePaste is built as a frontend for the incredible **[whisper.cpp](https://gith
     git clone https://github.com/ggerganov/whisper.cpp.git
     cd whisper.cpp
     ```
-2.  Build the project (specifically the `whisper-cli` tool):
+2.  Build the project. VibePaste uses **both** `whisper-server` (the fast
+    path, keeps the model in RAM) and `whisper-cli` (the fallback):
     ```bash
-    make
-    # Ensure the 'build/bin/whisper-cli' executable is created.
+    cmake -B build && cmake --build build -j --config Release
+    # Ensure build/bin/whisper-server and build/bin/whisper-cli both exist.
     ```
 3.  Download models (VibePaste uses `large-v3-turbo` for English and `large-v3` for Multilingual):
     ```bash
@@ -132,11 +148,37 @@ python3 -m src.menubar
 
 1.  App runs in the **Menu Bar** (look for the 🎙️ icon).
 2.  Place your cursor in any text field (Notes, Slack, VS Code, etc.).
-3.  **Press and release** the hotkey to **Start Recording**:
+3.  Press the hotkey to **start recording**:
     - **Left Option (⌥) + Space** → English (uses turbo model)
     - **Right Option (⌥) + Space** → Bosnian/Other (uses large-v3 model)
-4.  Speak your message.
-5.  **Press Space alone** to **Stop, Transcribe, and Paste**.
+4.  Speak your message. Watch the bar under the dots — it fills over 60 s and
+    turns red when your clip is getting long.
+5.  Press the **same combo again** to stop, transcribe, and paste.
+
+The hotkey combination is swallowed before it reaches the app you're typing
+in, so `⌥+Space` doesn't leave a stray non-breaking space in the field you're
+about to paste into. Plain `Space` is never touched — only Space *with Option
+held*. (This needs Accessibility permission; without it the hotkey still
+works but types a space, and the log says so.)
+
+The hotkey is a toggle, so you can keep typing normally while a
+transcription runs. A new recording can be
+started while the previous one is still transcribing — results paste in the
+order you spoke them. Recordings hard-stop at 120 s as a safety net.
+
+---
+
+## 🕘 Recent Recordings
+
+Every recording is saved to `~/.vibepaste/recordings/` before transcription
+is attempted, as `rec_<date>_<time>_<ms>_<lang>.wav`, with its transcript
+alongside as a `.txt`. The **last 10** are kept and older ones are deleted
+automatically.
+
+Open the menu bar icon and pick **Recent Recordings** to see them, newest
+first, with a preview of the text. Click one to copy its transcript to the
+clipboard. An entry marked *no transcript* means transcription failed — the
+audio is still there, and clicking reveals it in Finder.
 
 ---
 
@@ -165,9 +207,44 @@ By default, the Right Option + Space hotkey transcribes in **Bosnian**. To chang
 
 - **"VibePaste is already running!"**: Check your menu bar for the icon. If not there, run `pgrep -lf python` in terminal and kill any stuck processes.
 - **No Text Pasted**:
+  - The text is in your clipboard whenever the terminal/notification says so —
+    press `Cmd+V`. VibePaste only claims a paste succeeded when it actually
+    sent the keystroke.
+  - "Grant Accessibility to auto-paste" means macOS is blocking synthetic
+    keystrokes. Add the app in **System Settings → Privacy & Security →
+    Accessibility**. Note that *editing the app bundle can invalidate an
+    existing grant* — toggle it off and on again if paste stops working after
+    an update.
   - Ensure `whisper-cli` is executable at `$WHISPER_CPP_HOME/build/bin/whisper-cli`.
-  - Check if you granted "Input Monitoring" permissions.
+  - Check that **Input Monitoring** permission is granted in System Settings.
+- **Transcription failed**: the terminal prints the reason for each of the
+  three attempts, and the audio is kept in `~/.vibepaste/recordings/` so
+  nothing is lost. The full log is at `~/.vibepaste/vibepaste.log`.
+- **Overlay animation stuck on screen**: it exits with the app, but to force it:
+  ```bash
+  pkill -f 'overlay/ui_app.py'
+  ```
+- **Leftover whisper-server**: the model is unloaded after 10 minutes idle and
+  on quit. To force it:
+  ```bash
+  pkill -f whisper-server
+  ```
 - **Audio Issues**: Check System Settings to ensure the correct microphone is selected as default.
+
+---
+
+## 🧪 Development
+
+```bash
+source venv/bin/activate
+python -m pytest
+```
+
+To rebuild the app icon from source artwork:
+
+```bash
+python tools/build_icon.py assets/AppIcon-source.png
+```
 
 ---
 

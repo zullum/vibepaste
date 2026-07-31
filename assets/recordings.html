@@ -1,0 +1,277 @@
+<meta charset="utf-8">
+<title>Recent recordings</title>
+<style>
+  /* Two colours carry the meaning: blue is the recording itself (waveform,
+     language, timing), green is what you can do with it (copy). Nothing is
+     coloured for decoration, so the green button is always the thing to
+     reach for. Type is the system UI face throughout, with a monospace only
+     where digits need to line up. */
+  :root {
+    --paper:    #E4F1FA;
+    --veil:     #FFFFFF;
+    --ink:      #08222C;
+    --muted:    #4E727F;
+    --blue:     #0E93E0;
+    --blue-dim: #A8DDF9;
+    --green:    #5FE0B0;
+    --green-lo: #45D5A1;
+    --green-ink:#023A28;
+    --green-rim:#33CE99;
+    --line:     rgba(8, 34, 44, 0.13);
+    --hover:    rgba(14, 147, 224, 0.10);
+
+    --sans: -apple-system, "SF Pro Text", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:    #08161D;
+      --veil:     #10242E;
+      --ink:      #E8F5FA;
+      --muted:    #85A6B3;
+      --blue:     #38BDF8;
+      --blue-dim: #0B4763;
+      --green:    #15604A;
+      --green-lo: #1B6E56;
+      --green-ink:#6FF0C0;
+      --green-rim:#2A8768;
+      --line:     rgba(232, 245, 250, 0.15);
+      --hover:    rgba(56, 189, 248, 0.13);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 20px 22px 14px;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+  .kept {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  ul { margin: 0; padding: 12px 14px 20px; list-style: none; }
+
+  li {
+    background: var(--veil);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px 16px 16px;
+    margin-bottom: 10px;
+    animation: rise 360ms cubic-bezier(0.22, 0.9, 0.3, 1) both;
+    animation-delay: calc(var(--i) * 40ms);
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .lang {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+    line-height: 17px;
+    color: var(--blue);
+    background: var(--blue-dim);
+    border-radius: 5px;
+    padding: 0 6px;
+  }
+
+  /* The actual amplitude envelope of the recording: speech, pauses and
+     emphasis are visible, and a recording captured with no microphone
+     access draws as a flat line instead of looking like every other one. */
+  .wave {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    height: 30px;
+    margin: 11px 0 12px;
+  }
+  .wave i {
+    flex: 1;
+    min-width: 1px;
+    height: max(2px, calc(var(--h) * 100%));
+    background: var(--blue);
+    border-radius: 1px;
+    opacity: calc(0.45 + var(--h) * 0.55);
+  }
+  .wave.flat i { background: var(--muted); opacity: 0.22; }
+
+  .said { font-size: 15px; line-height: 1.5; margin: 0 0 13px; overflow-wrap: anywhere; }
+  .none {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--muted);
+    margin: 0 0 13px;
+  }
+
+  .body { min-width: 0; }
+  .act { display: flex; }
+  button {
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 38px;
+    padding: 0 14px;
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--green-ink);
+    background: var(--green);
+    border: 1px solid var(--green-rim);
+    border-radius: 8px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 130ms ease, transform 80ms ease;
+  }
+  button:hover  { background: var(--green-lo); }
+  button:active { transform: scale(0.985); }
+  button:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+  button svg { width: 15px; height: 15px; flex: none; }
+
+  /* Nothing to copy, so this must not compete with a real Copy button. */
+  button.secondary {
+    color: var(--muted);
+    background: transparent;
+    border-color: var(--line);
+    font-weight: 500;
+  }
+  button.secondary:hover { background: var(--hover); color: var(--ink); }
+
+  .empty { padding: 60px 26px; text-align: center; }
+  .empty p { font-size: 16px; font-weight: 600; margin: 0 0 8px; }
+  .empty span { font-size: 13px; color: var(--muted); }
+  kbd {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--veil);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 2px 6px;
+    color: var(--ink);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    li { animation: none; }
+    button { transition: none; }
+  }
+</style>
+
+<header>
+  <h1>Recent recordings</h1>
+  <span class="kept" id="kept"></span>
+</header>
+<div id="list"></div>
+
+<script>
+  const DATA = __DATA__;
+
+  const ICON_COPY = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect x="9" y="9" width="11" height="11" rx="2.5"/>
+    <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>`;
+  const ICON_DONE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M20 6 9 17l-5-5"/></svg>`;
+  const ICON_FIND = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+
+  const send = (action, index) => {
+    try {
+      window.webkit.messageHandlers.vibepaste.postMessage({ action, index });
+    } catch (e) { /* running outside the app shell */ }
+  };
+
+  const escape = (text) => {
+    const node = document.createElement("div");
+    node.textContent = text;
+    return node.innerHTML;
+  };
+
+  const bars = (levels) => {
+    const flat = levels.every((value) => value === 0);
+    const strip = levels.map((value) => `<i style="--h:${value}"></i>`).join("");
+    return `<div class="wave${flat ? " flat" : ""}">${strip}</div>`;
+  };
+
+  const row = (item, index) => `
+    <li style="--i:${index}">
+      <div class="body">
+        <div class="meta">
+          <span>${escape(item.time)}</span>
+          <span class="lang">${escape(item.language)}</span>
+          <span>${escape(item.duration)}</span>
+        </div>
+        ${bars(item.levels)}
+        ${item.text
+          ? `<p class="said">${escape(item.text)}</p>`
+          : `<p class="none">${escape(item.note)}</p>`}
+      </div>
+      <div class="act">
+        ${item.text
+          ? `<button data-index="${index}" data-act="copy">
+               ${ICON_COPY}<span>Copy</span></button>`
+          : `<button class="secondary" data-index="${index}" data-act="reveal"
+               aria-label="Show in Finder" title="Show in Finder">
+               ${ICON_FIND}<span>Reveal</span></button>`}
+      </div>
+    </li>`;
+
+  const list = document.getElementById("list");
+  document.getElementById("kept").textContent =
+    DATA.length ? `${DATA.length} kept` : "";
+
+  if (!DATA.length) {
+    list.innerHTML = `
+      <div class="empty">
+        <p>Nothing recorded yet.</p>
+        <span>Hold <kbd>⌥</kbd> and press <kbd>Space</kbd> to start.</span>
+      </div>`;
+  } else {
+    list.innerHTML = `<ul>${DATA.map(row).join("")}</ul>`;
+  }
+
+  list.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    send(button.dataset.act, Number(button.dataset.index));
+    if (button.dataset.act !== "copy") return;
+    button.innerHTML = `${ICON_DONE}<span>Copied</span>`;
+    setTimeout(() => {
+      button.innerHTML = `${ICON_COPY}<span>Copy</span>`;
+    }, 1500);
+  });
+</script>
