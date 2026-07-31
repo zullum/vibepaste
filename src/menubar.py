@@ -66,6 +66,17 @@ if RUMPS_AVAILABLE:
             ]
             # Clicking the Dock tile opens the same window.
             set_dock_icon_handler(lambda: self.show_recordings(None))
+            # Quitting has to reach VibePaste.stop(), or the whisper-server it
+            # started (~2.9GB for large-v3) is orphaned to launchd and never
+            # unloads — the leak that once took a 24GB machine down.
+            #
+            # before_quit is the *only* hook that fires here, which was
+            # measured rather than assumed: applicationWillTerminate_ emits
+            # it, while atexit never runs (NSApp.terminate_ skips
+            # Py_FinalizeEx) and a SIGTERM handler never runs either — the
+            # AppKit run loop parks the main thread, so the signal does not
+            # even stop the process.
+            rumps.events.before_quit.register(self._on_before_quit)
             self.start_vibepaste(None)
             # Report what actually got created once the run loop is up. The
             # menu bar item and the event tap are both invisible failures
@@ -102,6 +113,15 @@ if RUMPS_AVAILABLE:
                 listener.is_running(), listener.suppress_hotkeys,
                 list(listener._toggles),
             )
+
+        def _on_before_quit(self):
+            """Release the whisper-server before the process disappears."""
+            if self.vibepaste is None:
+                return
+            try:
+                self.vibepaste.stop()
+            except Exception as e:
+                logger.error(f"Shutdown on quit failed: {e}", exc_info=True)
 
         # -- recordings window ------------------------------------------
 
