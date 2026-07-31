@@ -1,9 +1,14 @@
 """Swallow the hotkey combination before it reaches the focused app.
 
 Option+Space types a non-breaking space (U+00A0). Suppressing the event is
-safer than deleting the character afterwards: a synthetic Backspace would
-fire even when nothing was inserted, and in some apps Backspace navigates
-back or deletes a selection.
+safer than deleting the character afterwards: a *blind* Backspace would fire
+even when nothing was inserted, and in some apps Backspace navigates back or
+deletes a selection.
+
+Suppression cannot catch every case, though, so this module also records
+which of its keys got through — see `was_typed`. That turns the deletion
+from a guess into an observation, and the paste path uses it to clean up the
+one space suppression could not stop.
 
 macOS-specific — pynput exposes this through its `darwin_intercept` hook.
 """
@@ -17,6 +22,7 @@ try:
     import Quartz
 
     KEYCODE_FIELD = Quartz.kCGKeyboardEventKeycode
+    KEY_DOWN = Quartz.kCGEventKeyDown
     ALT_FLAG_MASK = Quartz.kCGEventFlagMaskAlternate
     ANY_MODIFIER_MASK = (
         Quartz.kCGEventFlagMaskAlternate
@@ -27,8 +33,14 @@ try:
     SUPPRESSION_AVAILABLE = True
 except ImportError:  # not macOS, or PyObjC missing
     Quartz = None
-    KEYCODE_FIELD = ALT_FLAG_MASK = ANY_MODIFIER_MASK = None
+    KEYCODE_FIELD = KEY_DOWN = ALT_FLAG_MASK = ANY_MODIFIER_MASK = None
     SUPPRESSION_AVAILABLE = False
+
+# How recently a key must have slipped through to count as this hotkey's
+# stray character. The observed gap between the Space keydown and the Option
+# modifier is ~38ms; a second is generous enough to survive a busy dispatch
+# thread while staying far too short to pick up ordinary earlier typing.
+TYPED_WINDOW_SECONDS = 1.0
 
 
 def virtual_keycode(key):
@@ -43,6 +55,7 @@ class HotkeySuppressor:
     def __init__(self):
         self._keycodes = set()
         self._bare_until = {}   # keycode -> monotonic time to stop swallowing
+        self._typed_at = {}     # keycode -> when it last reached the app
 
     @property
     def available(self):
@@ -110,6 +123,25 @@ class HotkeySuppressor:
                 return None
             if self._swallow_bare(keycode, flags):
                 return None
+            if event_type == KEY_DOWN and keycode in self._keycodes:
+                # Slipped past us — whatever has focus is about to receive
+                # this character, and something has to undo it later.
+                self._typed_at[keycode] = time.monotonic()
         except Exception as e:
             logger.error(f"Intercept error: {e}")
         return event
+
+    def was_typed(self, key, within=TYPED_WINDOW_SECONDS):
+        """True if this key recently reached the focused app un-swallowed.
+
+        The one honest signal that a stray character was inserted. Anything
+        else — assuming suppression failed, or always deleting — sends a
+        Backspace when nothing was typed, and Backspace is not harmless: in
+        some apps it navigates back or deletes the selection.
+
+        Reading this consumes it, so a single stray space is never deleted
+        twice.
+        """
+        keycode = virtual_keycode(key)
+        stamp = self._typed_at.pop(keycode, None)
+        return stamp is not None and time.monotonic() - stamp <= within

@@ -68,6 +68,7 @@ class KeyboardListener:
         self.stuck_key_seconds = stuck_key_seconds
         self.suppressor = HotkeySuppressor()
         self.suppress_hotkeys = suppress_hotkeys and self.suppressor.available
+        self._intercepting = False
         self._listener = None
         self._toggles = {}
         self._bare = {}            # name -> bare (unmodified) key config
@@ -135,6 +136,7 @@ class KeyboardListener:
         self._worker.start()
 
         if self.suppress_hotkeys and self._try_start(intercept=True):
+            self._intercepting = True
             logger.info("Keyboard listener started (hotkey suppression on)")
             return
         if self.suppress_hotkeys:
@@ -181,6 +183,23 @@ class KeyboardListener:
 
     def is_running(self):
         return self._listener is not None and self._listener.is_alive()
+
+    def hotkey_typed_a_character(self, name):
+        """True if firing this hotkey left a stray character in the field.
+
+        Two ways that happens. Without an intercepting tap nothing is ever
+        swallowed, so the key always lands. With one, it still lands if the
+        key arrived before its modifier — macOS delivers Space up to 38ms
+        ahead of Option, and at that instant nothing says Option is coming.
+
+        Consumes the signal, so the character is only ever undone once.
+        """
+        config = self._toggles.get(name)
+        if config is None:
+            return False
+        if not self._intercepting:
+            return True
+        return self.suppressor.was_typed(config["key"])
 
     # -- tap callbacks: keep these cheap ------------------------------
 

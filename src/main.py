@@ -72,6 +72,12 @@ class VibePaste:
             on_saved=self._on_recording_saved,
         )
 
+        # Stray characters the start hotkey typed into the focused field,
+        # to be deleted just before the transcript is pasted over them.
+        # Only one recording runs at a time and stop() hands the audio over
+        # synchronously, so a single field cannot be claimed by two clips.
+        self._stray_characters = 0
+
         self._register_hotkeys()
         logger.info("VibePaste initialized")
 
@@ -100,6 +106,11 @@ class VibePaste:
         if self.session.is_recording:
             self.session.stop()
         else:
+            # Ask before starting: the signal is consumed on read, and the
+            # answer is about the keypress that got us here.
+            self._stray_characters = int(
+                self.keyboard_listener.hotkey_typed_a_character(name)
+            )
             self.session.start(*LANGUAGES[name])
         self._set_recording_state(self.session.is_recording)
 
@@ -115,8 +126,11 @@ class VibePaste:
         self._set_recording_state(self.session.is_recording)
 
     def _on_recording_saved(self, wav_path, model_path, language, duration):
+        stray = self._stray_characters
+        self._stray_characters = 0
         self.worker.submit(
-            TranscriptionJob(wav_path, model_path, language, duration)
+            TranscriptionJob(wav_path, model_path, language, duration,
+                             stray_characters=stray)
         )
 
     def _refresh_overlay(self):

@@ -10,6 +10,7 @@ import time
 import pytest
 from pynput import keyboard
 
+from src.hotkey_suppression import virtual_keycode
 from src.keyboard_listener import KeyboardListener
 
 ALT_L = keyboard.Key.alt_l
@@ -209,3 +210,33 @@ def test_a_raising_callback_does_not_kill_the_dispatcher(listener):
 
     assert done.wait(2), "dispatcher died on the first exception"
     assert calls == ["english", "english"]
+
+
+# -- reporting the stray character the hotkey typed ---------------------
+
+def test_no_stray_character_when_the_key_was_swallowed(listener):
+    listener._intercepting = True
+
+    assert listener.hotkey_typed_a_character("english") is False
+
+
+def test_stray_character_when_the_key_slipped_through(listener):
+    listener._intercepting = True
+    listener.suppressor._typed_at[
+        virtual_keycode(keyboard.Key.space)
+    ] = time.monotonic()
+
+    assert listener.hotkey_typed_a_character("english") is True
+
+
+def test_without_an_intercepting_tap_the_key_always_lands(listener):
+    """Nothing is swallowed in the fallback mode, so a space is always typed."""
+    listener._intercepting = False
+
+    assert listener.hotkey_typed_a_character("english") is True
+
+
+def test_an_unknown_hotkey_reports_no_stray_character(listener):
+    listener._intercepting = False
+
+    assert listener.hotkey_typed_a_character("nope") is False

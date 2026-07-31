@@ -21,11 +21,15 @@ _SHUTDOWN = object()
 class TranscriptionJob:
     """One saved recording waiting to be transcribed."""
 
-    def __init__(self, wav_path, model_path, language, duration):
+    def __init__(self, wav_path, model_path, language, duration,
+                 stray_characters=0):
         self.wav_path = wav_path
         self.model_path = model_path
         self.language = language
         self.duration = duration
+        # Characters the hotkey typed into the target field, to be deleted
+        # immediately before this transcript is pasted in their place.
+        self.stray_characters = stray_characters
 
 
 class TranscriptionWorker:
@@ -105,10 +109,10 @@ class TranscriptionWorker:
         elapsed = time.monotonic() - started
         print(f"✅ ({elapsed:.1f}s) {text}")
         self.store.save_transcript(job.wav_path, text)
-        self._deliver(text)
+        self._deliver(text, job.stray_characters)
 
-    def _deliver(self, text):
-        result = self.paster.paste_text(text)
+    def _deliver(self, text, stray_characters=0):
+        result = self.paster.paste_text(text, delete_first=stray_characters)
         if result.pasted:
             print("📋 Pasted!")
         elif result.copied:

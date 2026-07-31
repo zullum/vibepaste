@@ -161,6 +161,13 @@ about to paste into. Plain `Space` is never touched — only Space *with Option
 held*. (This needs Accessibility permission; without it the hotkey still
 works but types a space, and the log says so.)
 
+When a space does slip through anyway — either in that no-permission mode,
+or because macOS delivered Space a few milliseconds ahead of Option — it is
+backspaced away immediately before the transcript is pasted over it. The
+Backspace is sent *only* when the intercept actually watched the character
+reach the app, and only where the paste is about to land, so a field that
+never received a stray space is never touched.
+
 Plain Space only means "stop" while a recording is actually running, and it
 is never swallowed: it still types a space as well. Suppressing it would
 mean that one missed stop event leaves you unable to type a space anywhere,

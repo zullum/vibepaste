@@ -136,3 +136,57 @@ def test_registering_a_hotkey_registers_it_for_suppression():
 
 def test_suppression_can_be_disabled():
     assert KeyboardListener(suppress_hotkeys=False).suppress_hotkeys is False
+
+
+# -- knowing whether a stray character was actually typed ---------------
+
+KEY_UP = 11
+
+
+def test_a_swallowed_space_was_not_typed(suppressor, monkeypatch):
+    intercept(suppressor, monkeypatch, SPACE_VK, ALT_FLAG_MASK)
+
+    assert suppressor.was_typed(keyboard.Key.space) is False
+
+
+def test_a_space_that_slipped_through_was_typed(suppressor, monkeypatch):
+    """The race: Space arrives before the Option flag, so it reaches the app."""
+    intercept(suppressor, monkeypatch, SPACE_VK, 0)
+
+    assert suppressor.was_typed(keyboard.Key.space) is True
+
+
+def test_nothing_typed_reports_false(suppressor):
+    assert suppressor.was_typed(keyboard.Key.space) is False
+
+
+def test_reading_consumes_the_signal(suppressor, monkeypatch):
+    """One stray space must never be backspaced twice."""
+    intercept(suppressor, monkeypatch, SPACE_VK, 0)
+    suppressor.was_typed(keyboard.Key.space)
+
+    assert suppressor.was_typed(keyboard.Key.space) is False
+
+
+def test_a_stale_keypress_does_not_count(suppressor, monkeypatch):
+    intercept(suppressor, monkeypatch, SPACE_VK, 0)
+
+    assert suppressor.was_typed(keyboard.Key.space, within=-1) is False
+
+
+def test_key_releases_are_not_counted_as_typing(suppressor, monkeypatch):
+    import src.hotkey_suppression as module
+
+    monkeypatch.setattr(module.Quartz, "CGEventGetIntegerValueField",
+                        lambda event, field: SPACE_VK)
+    monkeypatch.setattr(module.Quartz, "CGEventGetFlags", lambda event: 0)
+    suppressor.intercept(KEY_UP, SENTINEL)
+
+    assert suppressor.was_typed(keyboard.Key.space) is False
+
+
+def test_unregistered_keys_are_not_tracked(suppressor, monkeypatch):
+    """Ordinary typing must not be recorded — we only track our own key."""
+    intercept(suppressor, monkeypatch, C_KEY_VK, 0)
+
+    assert suppressor.was_typed(keyboard.KeyCode.from_char("c")) is False

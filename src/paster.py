@@ -18,7 +18,12 @@ logger = logging.getLogger(__name__)
 
 CLIPBOARD_SETTLE_SECONDS = 0.12
 PASTE_SETTLE_SECONDS = 0.1
+BACKSPACE_SETTLE_SECONDS = 0.05
 COPY_ATTEMPTS = 3
+
+# The hotkey can leave one stray character. Anything above that is a bug in
+# the caller, and deleting the user's text is worse than leaving a space.
+MAX_STRAY_DELETIONS = 2
 
 try:
     from ApplicationServices import AXIsProcessTrusted
@@ -51,8 +56,16 @@ class Paster:
     def __init__(self, notify=True):
         self.notify = notify
 
-    def paste_text(self, text):
+    def paste_text(self, text, delete_first=0):
         """Copy `text` and paste it.
+
+        Args:
+            delete_first: how many characters the hotkey typed into the
+                target field, to be backspaced away first. Only pass a
+                count that something actually observed being typed — see
+                HotkeySuppressor.was_typed. Backspace is not a harmless
+                key: with nothing to delete it can navigate back or eat a
+                selection instead.
 
         Returns:
             PasteResult. `copied` says whether the clipboard holds the text —
@@ -77,6 +90,7 @@ class Paster:
                                reason="accessibility not granted")
 
         time.sleep(CLIPBOARD_SETTLE_SECONDS)
+        self._delete_stray_characters(delete_first)
 
         for method, send in (("pyautogui", self._paste_pyautogui),
                              ("osascript", self._paste_osascript)):
@@ -108,6 +122,27 @@ class Paster:
                 logger.warning(f"Clipboard copy failed (attempt {attempt}): {e}")
             time.sleep(0.1 * attempt)
         return False
+
+    def _delete_stray_characters(self, count):
+        """Backspace over characters the hotkey typed into the field.
+
+        Sent here, after the Accessibility check and a breath before the
+        paste, so it can only ever land in the same place the transcript
+        does. Capped: however confused the caller gets, this never turns
+        into a key repeat chewing through the user's text. A failure is
+        logged and ignored — a leftover space is a blemish, but losing the
+        transcript over it would not be.
+        """
+        count = min(max(int(count), 0), MAX_STRAY_DELETIONS)
+        if not count:
+            return
+        try:
+            for _ in range(count):
+                pyautogui.press("backspace")
+            time.sleep(BACKSPACE_SETTLE_SECONDS)
+            logger.info(f"Deleted {count} stray character(s) before pasting")
+        except Exception as e:
+            logger.warning(f"Could not delete stray characters: {e}")
 
     # -- paste mechanisms ----------------------------------------------
 
