@@ -13,6 +13,9 @@ _state = {
     "started_at": 0.0,
     "warn_seconds": 60.0,
     "max_seconds": 120.0,
+    # Bumped whenever the mode changes, so the view knows to pick a fresh
+    # animation rather than continuing the previous one.
+    "generation": 0,
 }
 _lock = threading.Lock()
 
@@ -25,7 +28,9 @@ def read_state():
 
 def set_mode(mode):
     with _lock:
-        _state["mode"] = mode
+        if _state["mode"] != mode:
+            _state["mode"] = mode
+            _state["generation"] += 1
 
 
 def apply_command(line):
@@ -41,18 +46,25 @@ def apply_command(line):
 
     with _lock:
         if command == "record":
-            _state["mode"] = "record"
+            _enter("record")
             _state["started_at"] = time.monotonic()
             if len(parts) >= 3:
                 _state["warn_seconds"] = float(parts[1])
                 _state["max_seconds"] = float(parts[2])
         elif command == "processing":
-            _state["mode"] = "processing"
+            _enter("processing")
         elif command == "hide":
-            _state["mode"] = "hidden"
+            _enter("hidden")
         elif command == "quit":
             return False
     return True
+
+
+def _enter(mode):
+    """Switch mode and mark it as a new clip. Caller holds the lock."""
+    if _state["mode"] != mode:
+        _state["generation"] += 1
+    _state["mode"] = mode
 
 
 def emit(message):

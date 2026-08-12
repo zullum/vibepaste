@@ -13,9 +13,12 @@ VIBEPASTE_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(VIBEPASTE_DIR))
 
 import config  # noqa: E402
+from src.app_restart import AppRestarter, resolve_bundle_path  # noqa: E402
 from src.dock_icon import set_dock_icon_handler  # noqa: E402
 from src.recording_store import RecordingStore  # noqa: E402
 from src.recordings_window import RecordingsWindow  # noqa: E402
+from src.restart_ledger import RestartLedger  # noqa: E402
+from src.wedge_recovery import WedgeRecovery  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,35 @@ except ImportError:
 
 if RUMPS_AVAILABLE:
 
+    def _quit_on_main_thread():
+        """Quit from a background thread without touching AppKit off-main.
+
+        The recovery runs on its own thread, and `NSApp.terminate_()` is an
+        AppKit call. Going through rumps also keeps `before_quit` in the
+        path, which is the only hook that releases the whisper-server.
+        """
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(rumps.quit_application)
+
+    def _build_recovery(vibepaste):
+        """Wire the wedge recovery to a running VibePaste."""
+        bundle = resolve_bundle_path()
+        # The one line that says whether auto-restart is actually armed.
+        # A mismatched bundle identifier disables it silently and correctly
+        # — failing safe, but invisibly, which is worth a log line.
+        logger.info("DIAG relaunch target: %s", bundle or "none (no restart)")
+        return WedgeRecovery(
+            ledger=RestartLedger(config.VIBEPASTE_DIR / "restarts.json"),
+            restarter=AppRestarter(bundle),
+            pending=lambda: vibepaste.worker.pending,
+            is_wedged=vibepaste.audio_recorder.is_wedged,
+            notify=lambda title, message: rumps.notification(
+                title, "", message
+            ),
+            quit_app=_quit_on_main_thread,
+        )
+
     class VibePasteMenuBar(rumps.App):
         """Menu bar front end for VibePaste."""
 
@@ -50,6 +82,8 @@ if RUMPS_AVAILABLE:
             super().__init__(name="VibePaste", title="🎙️",
                              quit_button="Quit VibePaste")
             self.vibepaste = None
+            # Built with VibePaste, so it is absent until it is started.
+            self.recovery = None
             self.store = RecordingStore(
                 config.RECORDINGS_DIR, config.MAX_STORED_RECORDINGS
             )
@@ -108,11 +142,47 @@ if RUMPS_AVAILABLE:
             if listener is None:
                 logger.error("DIAG hotkeys: VibePaste not started")
                 return
+            # healthy= is the field that matters: running= stays True after
+            # macOS disables the event tap, which is how a stone-deaf hotkey
+            # used to report itself as fine.
             logger.info(
-                "DIAG hotkeys: running=%s suppression=%s registered=%s",
-                listener.is_running(), listener.suppress_hotkeys,
+                "DIAG hotkeys: running=%s healthy=%s watchdog=%s "
+                "suppression=%s registered=%s",
+                listener.is_running(), listener.is_healthy(),
+                listener.watchdog.is_running(), listener.suppress_hotkeys,
                 list(listener._toggles),
             )
+
+        def _on_device_failed(self, reason, wedged=False):
+            """Make a lost microphone impossible to miss.
+
+            CoreAudio can deadlock in a way nothing in this process can
+            undo, and the app otherwise looks perfectly healthy while every
+            recording silently does nothing.
+
+            A wedge is handed to the recovery, which may end this process to
+            get the microphone back. A device that answered and refused is
+            not: restarting would not free a microphone another app holds.
+            """
+            self.title = "🎙️ ⚠️"
+            rumps.notification(
+                "🎙️ VibePaste", "Microphone unavailable",
+                f"{reason}. Quit and reopen VibePaste.",
+            )
+            if wedged and self.recovery is not None:
+                self.recovery.on_wedge()
+
+        def _on_device_ok(self):
+            """A recording reached disk, so the microphone is working.
+
+            Without this the warning above never came down on its own, and a
+            menu bar still showing ⚠️ over a perfectly healthy app is worse
+            than no warning at all. Guarded because every saved recording
+            calls it and reassigning the title redraws the status item.
+            """
+            if self.title != "🎙️":
+                self.title = "🎙️"
+                logger.info("Microphone recovered — warning cleared")
 
         def _on_before_quit(self):
             """Release the whisper-server before the process disappears."""
@@ -141,12 +211,18 @@ if RUMPS_AVAILABLE:
                 from src.main import VibePaste
 
                 self.vibepaste = VibePaste()
+                self.vibepaste.on_device_failed = self._on_device_failed
+                self.vibepaste.on_device_ok = self._on_device_ok
                 self.vibepaste.run_background()
                 self.store = self.vibepaste.store
+                self.recovery = _build_recovery(self.vibepaste)
                 self.title = "🎙️"
                 rumps.notification("🎙️ VibePaste", "Started",
                                    "Ready — ⌥+Space to record.")
                 logger.info("VibePaste started")
+                # If this process is itself the result of a restart, explain
+                # the blip rather than leaving the user to wonder.
+                self.recovery.announce_restart()
             except Exception as e:
                 logger.error(f"Failed to start VibePaste: {e}", exc_info=True)
                 rumps.notification("🎙️ VibePaste", "Error",

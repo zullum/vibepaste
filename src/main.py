@@ -70,7 +70,16 @@ class VibePaste:
             warn_seconds=config.RECORDING_WARN_SECONDS,
             max_seconds=config.RECORDING_MAX_SECONDS,
             on_saved=self._on_recording_saved,
+            on_failed=self._on_recording_failed,
         )
+
+        # Set by the menu bar so a lost microphone is visible, not just
+        # logged. CoreAudio wedging is the one failure the app cannot work
+        # around, so it must be the loudest rather than the quietest.
+        self.on_device_failed = None
+        # Its counterpart: without one, the warning is a one-way door that
+        # outlives the fault it reported.
+        self.on_device_ok = None
 
         # Stray characters the start hotkey typed into the focused field,
         # to be deleted just before the transcript is pasted over them.
@@ -128,10 +137,34 @@ class VibePaste:
     def _on_recording_saved(self, wav_path, model_path, language, duration):
         stray = self._stray_characters
         self._stray_characters = 0
+        # Audio reached disk, so the microphone is demonstrably working.
+        # Clears a warning an earlier failure latched into the menu bar,
+        # which otherwise stayed up long after the fault was gone.
+        if self.on_device_ok is not None:
+            try:
+                self.on_device_ok()
+            except Exception as e:
+                logger.error(f"Device recovery handler raised: {e}",
+                             exc_info=True)
         self.worker.submit(
             TranscriptionJob(wav_path, model_path, language, duration,
                              stray_characters=stray)
         )
+
+    def _on_recording_failed(self, reason, wedged=False):
+        """A recording could not start — tell the user, not just the log.
+
+        `wedged` distinguishes CoreAudio no longer answering, which only a
+        new process can fix, from a device that answered and refused.
+        """
+        self._stray_characters = 0
+        self._set_recording_state(False)
+        if self.on_device_failed is not None:
+            try:
+                self.on_device_failed(reason, wedged)
+            except Exception as e:
+                logger.error(f"Device failure handler raised: {e}",
+                             exc_info=True)
 
     def _refresh_overlay(self):
         """Overlay follows state: recording > transcribing > hidden."""
@@ -175,6 +208,7 @@ class VibePaste:
         logger.info("Stopping VibePaste")
         self.session.shutdown()
         self.keyboard_listener.stop()
+        self.audio_recorder.shutdown()
         self.overlay.stop()
         self.worker.shutdown()
         self.transcriber.shutdown()

@@ -1,6 +1,9 @@
 """Audio capture from the default microphone.
 
-Capture only — persisting audio is RecordingStore's job.
+Capture only — persisting audio is RecordingStore's job, and every call
+into CoreAudio belongs to AudioDevice. Nothing here may block: this runs on
+the hotkey dispatch thread, and a blocked call there kills every later
+hotkey (see src/audio_device.py for the deadlock that taught us).
 """
 
 import logging
@@ -10,19 +13,22 @@ import time
 import numpy as np
 import sounddevice as sd
 
+from src.audio_device import AudioDevice
+
 logger = logging.getLogger(__name__)
 
 
 class AudioRecorder:
     """Captures microphone audio into memory as int16 PCM frames."""
 
-    def __init__(self, sample_rate=16000, channels=1):
+    def __init__(self, sample_rate=16000, channels=1, device=None):
         self.sample_rate = sample_rate
         self.channels = channels
+        self.device = device if device is not None else AudioDevice()
         self._frames = []
         self._lock = threading.Lock()
         self._is_recording = False
-        self._stream = None
+        self._is_open = False
         self._started_at = None
         self._generation = 0   # identifies the current stream's callbacks
 
@@ -50,10 +56,18 @@ class AudioRecorder:
             if self._is_recording and generation == self._generation:
                 self._frames.append(indata.copy())
 
-    def start_recording(self):
-        """Open the input stream and begin capturing.
+    @property
+    def is_open(self):
+        """True once the microphone has actually started delivering."""
+        return self._is_open
 
-        Raises whatever sounddevice raises if the device is unavailable.
+    def start_recording(self, on_error=None):
+        """Ask for the microphone and begin collecting. Never blocks.
+
+        The open happens on the device thread, so this returns before any
+        audio arrives — frames simply start landing once it does. Device
+        failures cannot be raised here for the same reason; they arrive on
+        `on_error` instead.
         """
         if self._is_recording:
             logger.warning("Already recording")
@@ -64,8 +78,12 @@ class AudioRecorder:
             self._generation += 1
             generation = self._generation
 
-        try:
-            self._stream = sd.InputStream(
+        self._is_recording = True
+        self._is_open = False
+        self._started_at = time.monotonic()
+
+        def factory():
+            stream = sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 callback=(
@@ -74,13 +92,14 @@ class AudioRecorder:
                 ),
                 dtype=np.float32,
             )
-            self._stream.start()
-        except Exception:
-            self._stream = None
-            raise
+            stream.start()
+            return stream
 
-        self._is_recording = True
-        self._started_at = time.monotonic()
+        self.device.open(
+            factory,
+            on_ready=lambda: setattr(self, "_is_open", True),
+            on_error=on_error,
+        )
         logger.info("Audio recording started")
 
     def stop_recording(self):
@@ -95,12 +114,12 @@ class AudioRecorder:
             return None, 0.0
 
         self._is_recording = False
+        self._is_open = False
         duration = self.elapsed_seconds()
         self._started_at = None
 
-        stream, self._stream = self._stream, None
-        if stream is not None:
-            self._close_in_background(stream)
+        # Hands the teardown to the device thread; this call cannot block.
+        self.device.close()
 
         with self._lock:
             frames = self._frames
@@ -128,31 +147,21 @@ class AudioRecorder:
         logger.info(f"Captured {actual_duration:.1f}s of audio (peak={peak})")
         return audio, actual_duration
 
-    @staticmethod
-    def _close_in_background(stream):
-        """Tear the stream down without blocking the caller.
+    def discard(self):
+        """Give up on a recording without collecting its audio."""
+        self._is_recording = False
+        self._is_open = False
+        self._started_at = None
+        self.device.close()
+        with self._lock:
+            self._frames = []
 
-        Closing a CoreAudio input stream can block forever: observed with
-        the hotkey thread stuck in HALB_Mutex::Lock, reached through
-        PortAudio's FinishStoppingStream. Because that call sat on the
-        hotkey dispatch thread, the stop hotkey — and every hotkey after
-        it — stopped working, and the recording ran on with no way to end
-        it.
+    def is_wedged(self):
+        """True if CoreAudio has stopped responding — see AudioDevice."""
+        return self.device.is_wedged()
 
-        The captured audio has already been taken by this point, so the
-        teardown has nothing left to give us and can safely be abandoned to
-        its own thread. abort() rather than stop() because pending buffers
-        are of no interest once the frames are in hand.
-        """
-        def close():
-            try:
-                stream.abort()
-                stream.close()
-            except Exception as e:
-                logger.error(f"Error closing audio stream: {e}")
-
-        threading.Thread(target=close, name="audio-teardown",
-                         daemon=True).start()
+    def shutdown(self):
+        self.device.shutdown()
 
     def get_default_device(self):
         """Return default input device info, or None if it can't be queried."""

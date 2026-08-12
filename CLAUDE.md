@@ -79,6 +79,62 @@ Suppression needs an *intercepting* tap (Accessibility). Without it the listener
 back to a plain listener — hotkeys still work, but nothing is swallowed, which
 `hotkey_typed_a_character()` accounts for.
 
+### The tap dies silently, so it is watched
+
+macOS switches a tap off when its callback overruns (`kCGEventTapDisabledByTimeout`),
+and pynput calls `CGEventTapEnable` **once, at startup** — it has no handling for the
+notification macOS delivers. The tap then stays off forever while nothing looks wrong:
+the run loop spins, the thread lives, `is_alive()` and `is_running()` keep saying True.
+For months the only cure was restarting the app.
+
+`src/event_tap.py` fixes that, and three things there must not be undone:
+
+- **`RecoverableListener` exists only to keep the tap handle.** pynput leaves it in a
+  local variable inside `_run()`. Swap it back for `keyboard.Listener` and there is
+  nothing left to re-enable.
+- **`is_running()` is not a health check.** It reports the thread, which outlives the
+  tap. `is_healthy()` is the one that asks whether events are still being delivered;
+  the DIAG line prints both because `running=True` is what made this bug invisible.
+- **Recovery only runs on a tap that has been seen working.** Without Input Monitoring
+  the tap is created but never enabled, and recovering that means rebuilding a listener
+  every few seconds forever, which no amount of retrying can fix. A failed recovery
+  also backs off before retrying.
+
+Prevention matters as much as recovery: **nothing in the tap callbacks may write to the
+log.** Logging is file I/O, and file I/O in the callback is what gets the tap killed.
+Dropped stuck keys are handed to the dispatch worker and logged there.
+
+### CoreAudio can deadlock, so nothing waits on it
+
+CoreAudio's HAL mutex deadlocks. Measured on a live app that looked perfectly
+healthy — menu bar responsive, event tap delivering keys:
+
+```
+hotkey-dispatch  Pa_OpenStream -> AudioDeviceCreateIOProcID -> HALB_Mutex::Lock
+audio-teardown   AudioOutputUnitStop -> StopIOProc          -> HALB_Mutex::Lock
+```
+
+Nothing in the process can undo that — the mutex is process-wide, so retrying on a
+fresh thread blocks identically. Recording is gone until the app restarts. The rules
+that keep it from taking everything else down with it:
+
+- **Every CoreAudio call lives on the `audio-device` thread** (`src/audio_device.py`),
+  which nobody waits on. An earlier fix moved only the stream *close* to a background
+  thread; the deadlock simply moved to the next *open*, which was still on the dispatch
+  thread, and every hotkey died again. Moving one call is not enough — move them all.
+- **A recording counts as started at the keypress**, before the microphone opens. A
+  healthy open is ~70ms but ~2.5s the first time CoreAudio wakes, and waiting on it puts
+  that delay on the hotkey and never returns at all when it wedges. `RecordingSession`
+  arms its overlay and timers *before* asking for the device, because the failure can
+  arrive before `start()` returns and the abort has to have something to undo.
+- **A microphone that never arrives is given up on** (`wedged_seconds`) and reported
+  through `on_failed` to the menu bar, not just the log. It is the one failure the app
+  cannot work around, so it is the loudest.
+
+`src/hotkey_dispatch.py` is the net for the next such bug: a callback that overruns gets
+a replacement worker so the queue drains again. Replacements are **capped** — the stuck
+thread is blocked in C and cannot be killed, so each one is leaked.
+
 ### Subprocesses
 
 Two long-lived children. **Only one of them dies with the parent** — the difference
@@ -88,6 +144,24 @@ matters more than it looks:
   the visual feedback runs as one persistent process driven by one-line stdin commands
   (`record`/`processing`/`hide`/`quit`). Closing stdin kills it, so it cannot outlive
   the parent. It previously forked a fresh interpreter per show; don't go back to that.
+
+  It shows animated Data reactions from `assets/data/` (`src/overlay/animation.py`).
+  macOS decodes animated WebP natively through ImageIO, so there is no decoder to
+  bundle. Four things there are deliberate:
+
+  - **The pools are grouped by what is on screen, not by filename** — `starting_3` is a
+    smile, `starting_2` a celebration — and **how often you get a smile is `SMILE_CHANCE`,
+    not a side effect of list lengths.** An earlier version merged both pools and picked
+    at random; with four smiles against three listening clips it smiled more often than
+    not, and adding a clip silently changed the feel.
+  - **Clips are 220px wide and drawn at 110pt**, i.e. 1:1 on a Retina display. Shrinking
+    the files to "save space" reintroduces resampling and softness.
+  - **A missing clip is not an error.** `pick()` returning None makes the overlay fall
+    back to the drawn dots and spinner, so an absent `assets/data/` costs the animation
+    and nothing else.
+  - **The processing dots pulse mirror-symmetrically**, outer two in phase, and sit on
+    `STRIP_CENTRE_Y`, derived from the progress bar's own geometry. A left-to-right wave
+    swings the bright mass ±9pt off centre; measured, not guessed.
 - **whisper-server** (`src/whisper_server.py`) — resident per model, started lazily,
   unloaded after `SERVER_IDLE_UNLOAD_SECONDS`. `Transcriber` escalates through three
   *different* mechanisms (resident server → restarted server → `whisper-cli` fork) so a

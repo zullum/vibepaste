@@ -190,3 +190,54 @@ def test_unregistered_keys_are_not_tracked(suppressor, monkeypatch):
     intercept(suppressor, monkeypatch, C_KEY_VK, 0)
 
     assert suppressor.was_typed(keyboard.KeyCode.from_char("c")) is False
+
+
+# -- noticing that macOS switched the tap off ---------------------------
+
+TAP_DISABLED_BY_TIMEOUT = 0xFFFFFFFE
+TAP_DISABLED_BY_USER_INPUT = 0xFFFFFFFF
+
+
+def test_a_tap_disabled_by_timeout_asks_for_recovery():
+    """macOS delivers this and then stops delivering anything at all. Missing
+    it is what left the hotkey dead until the app was restarted."""
+    asked = []
+    suppressor = HotkeySuppressor(on_tap_disabled=lambda: asked.append(1))
+
+    suppressor.intercept(TAP_DISABLED_BY_TIMEOUT, SENTINEL)
+
+    assert asked == [1]
+
+
+def test_a_tap_disabled_by_user_input_asks_for_recovery():
+    asked = []
+    suppressor = HotkeySuppressor(on_tap_disabled=lambda: asked.append(1))
+
+    suppressor.intercept(TAP_DISABLED_BY_USER_INPUT, SENTINEL)
+
+    assert asked == [1]
+
+
+def test_an_ordinary_key_does_not_ask_for_recovery(monkeypatch):
+    """Every keystroke passes through here; only the notification counts."""
+    asked = []
+    suppressor = HotkeySuppressor(on_tap_disabled=lambda: asked.append(1))
+    suppressor.suppress_key(keyboard.Key.space)
+
+    intercept(suppressor, monkeypatch, SPACE_VK, ALT_FLAG_MASK)
+
+    assert asked == []
+
+
+def test_the_notification_reads_no_event_fields(suppressor, monkeypatch):
+    """Its keycode and flags are meaningless, and reading them on a broken
+    event would raise inside the tap callback."""
+    import src.hotkey_suppression as module
+
+    def explode(*args, **kwargs):
+        raise AssertionError("the notification's fields must not be read")
+
+    monkeypatch.setattr(module.Quartz, "CGEventGetIntegerValueField", explode)
+    monkeypatch.setattr(module.Quartz, "CGEventGetFlags", explode)
+
+    assert suppressor.intercept(TAP_DISABLED_BY_TIMEOUT, SENTINEL) is SENTINEL

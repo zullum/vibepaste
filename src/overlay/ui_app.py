@@ -29,7 +29,10 @@ from Foundation import NSMakeRect  # noqa: E402
 from src.overlay.state import apply_command, emit, read_state, set_mode  # noqa: E402
 from src.overlay.views import OverlayView, Ticker  # noqa: E402
 
-WIDTH, HEIGHT = 150, 66
+# Sized to the clip: 110pt wide is half the clips' 220px source, so they
+# render 1:1 on a Retina display, and the height is that plus the duration
+# bar with a little breathing room. Any taller just adds dead panel.
+WIDTH, HEIGHT = 150, 120
 TOP_MARGIN = 35
 FRAME_INTERVAL = 1.0 / 60.0
 

@@ -18,6 +18,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
+from src.event_tap import TAP_DISABLED_EVENTS
+
 try:
     import Quartz
 
@@ -52,10 +54,16 @@ def virtual_keycode(key):
 class HotkeySuppressor:
     """Decides which key events to swallow system-wide."""
 
-    def __init__(self):
+    def __init__(self, on_tap_disabled=None):
+        """
+        Args:
+            on_tap_disabled: called when macOS reports it has switched the
+                tap off. Must be cheap — it runs inside the tap callback.
+        """
         self._keycodes = set()
         self._bare_until = {}   # keycode -> monotonic time to stop swallowing
         self._typed_at = {}     # keycode -> when it last reached the app
+        self._on_tap_disabled = on_tap_disabled
 
     @property
     def available(self):
@@ -116,6 +124,13 @@ class HotkeySuppressor:
         untouched. Any error passes the event through rather than risk
         eating the user's keystrokes.
         """
+        if event_type in TAP_DISABLED_EVENTS:
+            # macOS has switched the tap off and will deliver nothing more
+            # until it is re-enabled. Its keycode and flags mean nothing, so
+            # read neither — just wake the thread that can fix this.
+            if self._on_tap_disabled is not None:
+                self._on_tap_disabled()
+            return event
         try:
             keycode = Quartz.CGEventGetIntegerValueField(event, KEYCODE_FIELD)
             flags = Quartz.CGEventGetFlags(event)
