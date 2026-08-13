@@ -40,7 +40,7 @@ LISTENING = [
 ]
 SMILING = [
     "data_smiling_1", "data_smiling_2", "data_smiling_3", "data_smiling_4",
-    "data_smiling_5", "data_smiling_6", "data_smiling_7",
+    "data_smiling_5", "data_smiling_6",
 ]
 PROCESSING = [
     "data_processing_1", "data_processing_2", "data_processing_3",
