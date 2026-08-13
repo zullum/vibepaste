@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 DEREGISTER_GRACE_SECONDS = 0.5
 POLL_SECONDS = 0.2
 
+# The helper is armed *before* the quit, so a quit that never arrives leaves
+# it polling. Unbounded that is a process spinning until logout, and
+# reopening a bundle that never died would only activate the running app.
+# Bounded, the worst case is a helper that quietly expires.
+GIVE_UP_SECONDS = 60.0
+
 # Matches CFBundleIdentifier in VibePaste.app's Info.plist. The relaunch
 # target is identified by this and not by the path's shape — see
 # resolve_bundle_path() for the .app that shape-matching picks up instead.
@@ -69,9 +75,14 @@ class AppRestarter:
             return False
 
         target = shlex.quote(str(self.bundle_path))
+        attempts = int(GIVE_UP_SECONDS / POLL_SECONDS)
         script = (
+            f"n=0; "
             f"while kill -0 {self.pid} 2>/dev/null; do "
-            f"sleep {POLL_SECONDS}; done; "
+            f"sleep {POLL_SECONDS}; "
+            f"n=$((n+1)); "
+            f"[ $n -ge {attempts} ] && exit 0; "
+            f"done; "
             f"sleep {DEREGISTER_GRACE_SECONDS}; "
             f"open -a {target}"
         )

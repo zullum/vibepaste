@@ -91,6 +91,21 @@ def test_the_helper_waits_for_this_process_before_reopening(tmp_path):
     assert "VibePaste.app" in spawn.command
 
 
+def test_the_helper_gives_up_if_the_app_never_quits(tmp_path):
+    """The helper is armed before the quit, so a quit that never happens
+    leaves it polling. Unbounded, that is a stray process spinning until
+    logout — and reopening a bundle that never died would only activate the
+    running app anyway. Bounded, the worst case is a helper that expires.
+    """
+    from src.app_restart import GIVE_UP_SECONDS, POLL_SECONDS
+
+    spawn = FakeSpawn()
+    AppRestarter(bundle(tmp_path), pid=1, spawn=spawn).restart()
+
+    assert str(int(GIVE_UP_SECONDS / POLL_SECONDS)) in spawn.command
+    assert "exit" in spawn.command
+
+
 def test_the_helper_outlives_the_process_that_armed_it():
     """Without a new session the helper dies with its parent, and the parent
     dying is the entire trigger."""
